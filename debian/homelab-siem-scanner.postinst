@@ -7,4 +7,5 @@ if [ "$1" = "configure" ]; then
     echo "Run: sudo homelab-siem-setup --help"
 fi
 
+#DEBHELPER#
 exit 0
