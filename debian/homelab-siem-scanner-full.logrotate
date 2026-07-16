@@ -1,4 +1,4 @@
-/var/log/homelab-siem.log {
+/var/log/homelab-siem-full-setup.log {
     weekly
     rotate 4
     compress

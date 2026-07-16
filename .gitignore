@@ -46,3 +46,6 @@ debian/.debhelper/
 *.swp
 *.bak
 .DS_Store
+debian/homelab-siem-scanner-full/
+debian/*.substvars
+debian/debhelper-build-stamp

@@ -4,11 +4,29 @@ Priority: optional
 Maintainer: rist138 <zak8138@protonmail.com>
 Build-Depends: debhelper-compat (= 13)
 Standards-Version: 4.6.2
+Rules-Requires-Root: no
 
 Package: homelab-siem-scanner
 Architecture: all
-Depends: ${misc:Depends}, curl, jq, openssl, apt-transport-https, gnupg2
-Suggests: ufw, nmap, clamav
-Description: Integrated Home Lab SIEM and Security Scanner Orchestrator
- An automated home lab SIEM orchestrator that deploys a unified 
- Wazuh + ELK platform inside a network perimeter managed by UFW.
+Depends: ${misc:Depends}, ca-certificates, curl, gnupg
+Suggests: ufw, nmap, clamav, clamav-freshclam
+Conflicts: homelab-siem-scanner-full
+Description: Lightweight Wazuh Manager orchestrator
+ Installs an explicit setup utility for deploying Wazuh Manager without
+ Wazuh Indexer, Dashboard, OpenSearch, Elastic, or Grafana.
+ .
+ Installation does not automatically change firewall policy or deploy
+ external software.
+
+Package: homelab-siem-scanner-full
+Architecture: all
+Depends: ${misc:Depends}, ca-certificates, curl, gnupg
+Suggests: ufw
+Conflicts: homelab-siem-scanner
+Description: Optional complete Wazuh SIEM orchestrator
+ Installs an explicit setup utility for deploying Wazuh Manager, Wazuh
+ Indexer, and Wazuh Dashboard using the official Wazuh installation
+ assistant.
+ .
+ This package requires significantly more system resources than the
+ manager-only package.

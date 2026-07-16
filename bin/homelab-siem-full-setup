@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LOG_PATH=/var/log/homelab-siem-full-setup.log
+WAZUH_SERIES=4.14
+FIREWALL_SOURCE=
+FORCE=0
+KEEP_REPOSITORY=0
+STATE_DIRECTORY=/var/lib/homelab-siem-scanner-full
+
+usage() {
+    cat <<'EOF'
+Usage: sudo homelab-siem-full-setup [options]
+
+Installs Wazuh Manager, Indexer, and Dashboard.
+
+Options:
+  --configure-ufw CIDR       Permit agents and dashboard clients from CIDR
+  --wazuh-series VERSION     Assistant series; default: 4.14
+  --keep-repository-enabled  Leave the Wazuh repository enabled
+  --force                    Override hardware requirement failures
+  -h, --help                 Display this help
+EOF
+}
+
+die() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+while (($#)); do
+    case "$1" in
+        --configure-ufw)
+            [[ $# -ge 2 ]] || die "--configure-ufw requires a CIDR"
+            FIREWALL_SOURCE=$2
+            shift 2
+            ;;
+        --wazuh-series)
+            [[ $# -ge 2 ]] || die "--wazuh-series requires a version"
+            WAZUH_SERIES=$2
+            shift 2
+            ;;
+        --keep-repository-enabled)
+            KEEP_REPOSITORY=1
+            shift
+            ;;
+        --force)
+            FORCE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "Unknown option: $1"
+            ;;
+    esac
+done
+
+((EUID == 0)) || die "Run this command with sudo."
+[[ "$WAZUH_SERIES" =~ ^[0-9]+\.[0-9]+$ ]] ||
+    die "Invalid Wazuh series."
+
+exec > >(tee -a "$LOG_PATH") 2>&1
+trap 'printf "Setup failed near line %s.\n" "$LINENO" >&2' ERR
+
+case "$(dpkg --print-architecture)" in
+    amd64|arm64) ;;
+    *) die "The Wazuh full stack requires amd64 or arm64." ;;
+esac
+
+MEM_KIB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+CPU_COUNT=$(nproc)
+DISK_KIB=$(df -Pk / | awk 'NR == 2 {print $2}')
+
+REQUIREMENT_FAILURE=0
+
+if ((MEM_KIB < 8000000)); then
+    printf 'ERROR: Full Wazuh requires approximately 8 GiB RAM.\n'
+    REQUIREMENT_FAILURE=1
+fi
+
+if ((CPU_COUNT < 4)); then
+    printf 'ERROR: Full Wazuh requires at least 4 CPU cores.\n'
+    REQUIREMENT_FAILURE=1
+fi
+
+if ((DISK_KIB < 52428800)); then
+    printf 'ERROR: Full Wazuh requires at least 50 GiB storage.\n'
+    REQUIREMENT_FAILURE=1
+fi
+
+if ((REQUIREMENT_FAILURE && FORCE == 0)); then
+    die "Hardware requirements failed. Use manager-only or explicitly use --force."
+fi
+
+for package in wazuh-manager wazuh-indexer wazuh-dashboard; do
+    STATUS=$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)
+    [[ "$STATUS" != installed ]] ||
+        die "$package is already installed. Refusing to overwrite an existing deployment."
+done
+
+install -d -m 0700 "$STATE_DIRECTORY"
+
+INSTALLER="$STATE_DIRECTORY/wazuh-install.sh"
+INSTALLER_URL="https://packages.wazuh.com/${WAZUH_SERIES}/wazuh-install.sh"
+
+printf 'Downloading the official Wazuh %s installation assistant...\n' \
+    "$WAZUH_SERIES"
+
+curl --fail --silent --show-error --location \
+    --proto '=https' --tlsv1.2 \
+    "$INSTALLER_URL" \
+    --output "$INSTALLER"
+
+chmod 0700 "$INSTALLER"
+
+(
+    cd "$STATE_DIRECTORY"
+    bash "$INSTALLER" -a
+)
+
+if [[ -n "$FIREWALL_SOURCE" ]]; then
+    case "$FIREWALL_SOURCE" in
+        0.0.0.0/0|::/0)
+            die "Refusing an unrestricted firewall source."
+            ;;
+    esac
+
+    apt-get update
+    apt-get install -y ufw
+
+    # Do not alter default policy, SSH access, or enable UFW automatically.
+    ufw allow from "$FIREWALL_SOURCE" to any port 443 proto tcp \
+        comment 'homelab-siem-full: dashboard'
+    ufw allow from "$FIREWALL_SOURCE" to any port 1514 proto tcp \
+        comment 'homelab-siem-full: agents'
+    ufw allow from "$FIREWALL_SOURCE" to any port 1515 proto tcp \
+        comment 'homelab-siem-full: enrollment'
+
+    ufw status verbose
+fi
+
+WAZUH_SOURCE=/etc/apt/sources.list.d/wazuh.list
+if ((KEEP_REPOSITORY == 0)) && [[ -f "$WAZUH_SOURCE" ]]; then
+    sed -i 's/^[[:space:]]*deb /# deb /' "$WAZUH_SOURCE"
+    apt-get update
+fi
+
+printf '\nFull Wazuh installation completed.\n'
+printf 'Credentials and installation artifacts: %s\n' "$STATE_DIRECTORY"
+printf 'Setup log: %s\n' "$LOG_PATH"

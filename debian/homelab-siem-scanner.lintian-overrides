@@ -1,0 +1,2 @@
+# The setup utility documents its options through --help and README.md.
+homelab-siem-scanner: no-manual-page [usr/sbin/homelab-siem-setup]

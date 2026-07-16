@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LOG_PATH=/var/log/homelab-siem-setup.log
+AGENT_SOURCE=
+INSTALL_CLAMAV=0
+INSTALL_NMAP=0
+KEEP_REPOSITORY=0
+
+usage() {
+    cat <<'EOF'
+Usage: sudo homelab-siem-setup [options]
+
+Installs Wazuh Manager only. No dashboard or indexer is installed.
+
+Options:
+  --configure-ufw CIDR       Permit Wazuh agents from this CIDR
+  --with-clamav              Install and initialize ClamAV
+  --with-nmap                Install Nmap
+  --keep-repository-enabled  Leave the Wazuh repository enabled
+  -h, --help                 Display this help
+EOF
+}
+
+die() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+while (($#)); do
+    case "$1" in
+        --configure-ufw)
+            [[ $# -ge 2 ]] || die "--configure-ufw requires a CIDR"
+            AGENT_SOURCE=$2
+            shift 2
+            ;;
+        --with-clamav)
+            INSTALL_CLAMAV=1
+            shift
+            ;;
+        --with-nmap)
+            INSTALL_NMAP=1
+            shift
+            ;;
+        --keep-repository-enabled)
+            KEEP_REPOSITORY=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "Unknown option: $1"
+            ;;
+    esac
+done
+
+((EUID == 0)) || die "Run this command with sudo."
+
+exec > >(tee -a "$LOG_PATH") 2>&1
+trap 'printf "Setup failed near line %s.\n" "$LINENO" >&2' ERR
+
+[[ -r /etc/os-release ]] || die "/etc/os-release is unavailable"
+# shellcheck disable=SC1091
+. /etc/os-release
+
+[[ "${ID:-}" == ubuntu ]] ||
+    die "This PPA currently supports Ubuntu only."
+
+case "$(dpkg --print-architecture)" in
+    amd64|arm64) ;;
+    *) die "Wazuh Manager requires amd64 or arm64." ;;
+esac
+
+MEM_KIB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+if ((MEM_KIB < 1900000)); then
+    printf 'WARNING: Wazuh recommends at least 2 GB RAM for the manager.\n'
+fi
+
+KEYRING=/usr/share/keyrings/wazuh.gpg
+SOURCE_FILE=/etc/apt/sources.list.d/wazuh.list
+TEMP_KEY=$(mktemp)
+trap 'rm -f "$TEMP_KEY"' EXIT
+
+printf 'Installing the official Wazuh repository key...\n'
+install -d -m 0755 /usr/share/keyrings
+
+curl --fail --silent --show-error --location \
+    --proto '=https' --tlsv1.2 \
+    https://packages.wazuh.com/key/GPG-KEY-WAZUH \
+    --output "$TEMP_KEY"
+
+gpg --batch --yes --dearmor --output "$KEYRING" "$TEMP_KEY"
+chmod 0644 "$KEYRING"
+
+printf '%s\n' \
+    'deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main' \
+    > "$SOURCE_FILE"
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y wazuh-manager
+
+# Manager-only mode has no Wazuh Indexer. Disable its indexer connection so
+# that the manager does not repeatedly attempt to reach a nonexistent service.
+OSSEC_CONFIG=/var/ossec/etc/ossec.conf
+if [[ -f "$OSSEC_CONFIG" ]]; then
+    cp -a "$OSSEC_CONFIG" \
+        "${OSSEC_CONFIG}.pre-manager-only.$(date '+%Y%m%d%H%M%S').bak"
+
+    sed -i '/<indexer>/,/<\/indexer>/ {
+        s#<enabled>[[:space:]]*yes[[:space:]]*</enabled>#<enabled>no</enabled>#
+    }' "$OSSEC_CONFIG"
+fi
+
+systemctl daemon-reload
+systemctl enable --now wazuh-manager
+systemctl restart wazuh-manager
+
+if [[ -n "$AGENT_SOURCE" ]]; then
+    case "$AGENT_SOURCE" in
+        0.0.0.0/0|::/0)
+            die "Refusing an unrestricted agent source."
+            ;;
+    esac
+
+    apt-get install -y ufw
+
+    # These commands add only Wazuh rules. They do not enable UFW, change its
+    # default policy, or alter SSH access.
+    ufw allow from "$AGENT_SOURCE" to any port 1514 proto tcp \
+        comment 'homelab-siem: Wazuh agents'
+    ufw allow from "$AGENT_SOURCE" to any port 1515 proto tcp \
+        comment 'homelab-siem: Wazuh enrollment'
+
+    ufw status verbose
+fi
+
+if ((INSTALL_CLAMAV)); then
+    apt-get install -y clamav clamav-freshclam
+    systemctl stop clamav-freshclam 2>/dev/null || true
+    freshclam || printf 'WARNING: ClamAV signatures could not be refreshed.\n'
+    systemctl enable --now clamav-freshclam
+fi
+
+if ((INSTALL_NMAP)); then
+    apt-get install -y nmap
+fi
+
+if ((KEEP_REPOSITORY == 0)); then
+    sed -i 's/^[[:space:]]*deb /# deb /' "$SOURCE_FILE"
+    apt-get update
+    printf 'The Wazuh repository was disabled to prevent unplanned upgrades.\n'
+fi
+
+printf '\nWazuh Manager installation completed.\n'
+printf 'Service status: systemctl status wazuh-manager\n'
+printf 'Local alerts: /var/ossec/logs/alerts/alerts.json\n'
+printf 'Setup log: %s\n' "$LOG_PATH"
+printf 'No web dashboard or indexer was installed.\n'

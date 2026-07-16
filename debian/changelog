@@ -1,3 +1,15 @@
+homelab-siem-scanner (2.9) noble; urgency=medium
+
+  * Split manager-only and full Wazuh deployments into separate packages.
+  * Made manager-only deployment the lightweight default.
+  * Removed automatic network downloads and firewall changes from postinst.
+  * Removed Tailscale, ELK, Grafana, and global UFW assumptions.
+  * Added explicit, source-restricted optional UFW configuration.
+  * Removed obsolete and ineffective APT pinning.
+
+ -- rist138 <zak8138@protonmail.com>  Thu, 16 Jul 2026 01:22:00 +0000
+
+
 homelab-siem-scanner (2.8) noble; urgency=medium
 
   * Integrated automated APT version pinning policy for Wazuh/ELK components

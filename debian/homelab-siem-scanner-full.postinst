@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    rm -f /etc/apt/preferences.d/homelab-siem-pinning
+    echo "homelab-siem-scanner-full installed."
+    echo "Run: sudo homelab-siem-full-setup --help"
+fi
+
+exit 0
